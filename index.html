@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Faturamento – Valor Log</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- FIREBASE SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, getDocs, setDoc, doc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+  // ======================================================
+  // PASSO 3: COLE SUAS CREDENCIAIS FIREBASE AQUI
+  // ======================================================
+  const firebaseConfig = {
+    apiKey:            "COLE_AQUI_apiKey",
+    authDomain:        "COLE_AQUI_authDomain",
+    projectId:         "COLE_AQUI_projectId",
+    storageBucket:     "COLE_AQUI_storageBucket",
+    messagingSenderId: "COLE_AQUI_messagingSenderId",
+    appId:             "COLE_AQUI_appId"
+  };
+  // ======================================================
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getFirestore(app);
+
+  // Expoe funcoes ao escopo global para o resto do script usar
+  window._fb = { db, collection, getDocs, setDoc, doc, onSnapshot, serverTimestamp };
+
+  // Listener em tempo real: quando ADM salvar, TODOS atualizam automaticamente
+  onSnapshot(collection(db, "faturamento"), (snap) => {
+    if (snap.empty) {
+      console.log("Firestore vazio – usando dados locais.");
+      return;
+    }
+    const rows = [];
+    snap.forEach(d => rows.push(d.data()));
+    // Ordena por data
+    rows.sort((a,b) => a.data.localeCompare(b.data));
+    window.DATA = rows;
+    if (window.dashboardReady) {
+      window.buildAllFilters();
+      window.buildVisao();
+      showToast("🔄 Dados atualizados em tempo real!");
+    }
+  });
+
+  // Funcao global para salvar no Firestore (usada pelo ADM)
+  window.saveToFirestore = async function(records) {
+    const { db, collection, setDoc, doc, serverTimestamp } = window._fb;
+    // Salva metadata
+    await setDoc(doc(db, "meta", "lastImport"), {
+      importedAt: serverTimestamp(),
+      totalRecords: records.length
+    });
+    // Salva cada registro como documento individual (id = nr_nota + data)
+    const batchSize = 500;
+    let saved = 0;
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      const id = (r.nr_nota || i) + "_" + r.data.replace(/-/g,"");
+      await setDoc(doc(db, "faturamento", id), r);
+      saved++;
+      const pct = Math.round((saved / records.length) * 100);
+      progressTo(pct, `Salvando no Firebase... ${saved}/${records.length}`);
+    }
+    return saved;
+  };
+</script>
+<style>
+:root{
+  --orange:#E8610A;--orange-dark:#c2520a;
+  --black:#0a0a0a;--bg:#f5f5f0;--surface:#fff;
+  --border:#e2e2dc;--text:#1a1a18;--text2:#5a5a55;--text3:#9a9a94;
+  --up:#0ca30c;--down:#d03b3b;--radius:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0;font-family:"Segoe UI",Arial,sans-serif;}
+body{background:var(--bg);color:var(--text);min-height:100vh;}
+
+/* TOAST */
+#toast{position:fixed;top:16px;right:20px;background:#1a1a18;color:#fff;padding:10px 18px;border-radius:var(--radius);font-size:13px;font-weight:600;z-index:9999;opacity:0;transition:opacity .3s;pointer-events:none;border-left:4px solid var(--orange);}
+#toast.show{opacity:1;}
+
+/* ROLE BAR */
+.role-bar{background:#111;padding:6px 28px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #222;}
+.role-bar span{color:#888;font-size:12px;}
+.role-btn{padding:4px 14px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;}
+.role-btn.active{background:var(--orange);color:#fff;}
+.role-btn:not(.active){background:#2a2a2a;color:#888;}
+#role-label{font-size:11px;font-weight:700;margin-left:6px;}
+
+/* FIREBASE STATUS */
+#fb-status{margin-left:auto;font-size:11px;display:flex;align-items:center;gap:5px;}
+.fb-dot{width:8px;height:8px;border-radius:50%;background:#555;}
+.fb-dot.connected{background:var(--up);}
+.fb-dot.syncing{background:#eda100;animation:pulse 1s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+
+/* HEADER */
+.header{background:var(--black);padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:66px;border-bottom:3px solid var(--orange);}
+.header-logo img{height:46px;object-fit:contain;}
+.header-info{text-align:right;}
+.header-info .company{color:var(--orange);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}
+.header-info .title{color:#fff;font-size:19px;font-weight:700;}
+.header-info .sub{color:#aaa;font-size:11px;margin-top:2px;}
+
+/* TABS */
+.tabs-wrap{background:#111;padding:0 28px;border-bottom:1px solid #222;}
+.tabs{display:flex;}
+.tab{padding:12px 22px;font-size:13px;cursor:pointer;border:none;background:none;color:#888;border-bottom:3px solid transparent;font-weight:500;transition:all .15s;}
+.tab.active{color:var(--orange);border-bottom-color:var(--orange);}
+.tab:hover:not(.active){color:#fff;}
+
+/* PANE */
+.pane{display:none;padding:22px 28px;}.pane.active{display:block;}
+
+/* FILTERS */
+.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;}
+.filters label{font-size:12px;color:var(--text2);}
+.filters select{font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:7px 12px;outline:none;}
+.filters select:focus{border-color:var(--orange);}
+.btn{padding:8px 18px;border:none;border-radius:var(--radius);font-size:13px;cursor:pointer;font-weight:600;transition:background .15s;}
+.btn-orange{background:var(--orange);color:#fff;}.btn-orange:hover{background:var(--orange-dark);}
+.btn-ghost{background:var(--surface);color:var(--text);border:1px solid var(--border);}.btn-ghost:hover{background:var(--bg);}
+
+/* KPI */
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;}
+.kpi{background:var(--surface);border-radius:var(--radius);padding:16px 18px;border:1px solid var(--border);border-left:4px solid var(--orange);}
+.kpi-label{font-size:11px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em;}
+.kpi-val{font-size:22px;font-weight:700;}
+.kpi-sub{font-size:12px;margin-top:5px;}
+.up{color:var(--up);}.down{color:var(--down);}.neutral{color:var(--text2);}
+
+/* CARD */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:14px;}
+.card-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:7px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--orange);flex-shrink:0;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+
+/* RANKING */
+.rank-row{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);}
+.rank-row:last-child{border-bottom:none;}
+.rank-trophy{font-size:16px;min-width:24px;text-align:center;}
+.rank-num{font-size:12px;color:var(--text3);min-width:18px;font-weight:700;}
+.rank-name{font-size:12px;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rank-bar-wrap{width:70px;background:var(--bg);border-radius:3px;height:6px;overflow:hidden;flex-shrink:0;}
+.rank-bar{height:6px;border-radius:3px;background:var(--orange);}
+.rank-val{font-size:12px;font-weight:700;min-width:90px;text-align:right;}
+
+/* TABLE */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{text-align:left;padding:9px 10px;color:var(--text3);font-weight:700;border-bottom:2px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.04em;background:var(--bg);}
+td{padding:8px 10px;border-bottom:1px solid var(--border);}
+tr:hover td{background:#fff8f4;}
+
+/* VS CARDS */
+.vs-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}
+.vs-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;border-top:3px solid var(--orange);}
+.vs-month{font-size:11px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em;}
+.vs-val{font-size:22px;font-weight:700;}
+.vs-delta{font-size:12px;margin-top:5px;font-weight:600;}
+
+/* LEGEND */
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;}
+.leg-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);}
+.leg-box{width:10px;height:10px;border-radius:2px;flex-shrink:0;}
+
+/* UPLOAD */
+.upload-zone{border:2px dashed var(--orange);border-radius:var(--radius);padding:44px;text-align:center;background:#fff9f6;cursor:pointer;transition:background .2s;margin-bottom:16px;}
+.upload-zone:hover,.upload-zone.drag{background:#fff0e5;}
+.upload-zone input[type=file]{display:none;}
+.upload-icon{font-size:44px;margin-bottom:10px;}
+.upload-title{font-size:16px;font-weight:700;color:var(--orange);margin-bottom:6px;}
+.upload-sub{font-size:13px;color:var(--text2);}
+.msg-ok{background:#e8f5e8;border:1px solid var(--up);color:#0a5e0a;padding:11px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:12px;display:none;font-weight:600;}
+.msg-err{background:#fde8e8;border:1px solid var(--down);color:#7a1010;padding:11px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:12px;display:none;font-weight:600;}
+.progress-wrap{margin-top:12px;display:none;}
+.progress-text{font-size:12px;color:var(--text2);margin-bottom:5px;}
+.progress-bar-bg{background:var(--border);border-radius:4px;height:10px;overflow:hidden;}
+.progress-bar{height:10px;background:var(--orange);border-radius:4px;width:0;transition:width .3s;}
+.badge-adm{background:var(--orange);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;}
+.step-list{list-style:none;counter-reset:step;}
+.step-list li{counter-increment:step;display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);}
+.step-list li:last-child{border-bottom:none;}
+.step-num{background:var(--orange);color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;margin-top:1px;}
+.step-text{font-size:13px;color:var(--text2);line-height:1.6;}
+.step-text strong{color:var(--text);}
+code{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;font-family:monospace;}
+
+/* LOCK */
+.lock-card{text-align:center;padding:50px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);}
+</style>
+</head>
+<body>
+
+<div id="toast"></div>
+
+<!-- ROLE BAR -->
+<div class="role-bar">
+  <span>Acesso:</span>
+  <button class="role-btn active" id="btn-admin"  onclick="setRole('admin')">ADM</button>
+  <button class="role-btn"        id="btn-viewer" onclick="setRole('viewer')">Visualização</button>
+  <span id="role-label" style="color:var(--orange)">● Administrador</span>
+  <div id="fb-status">
+    <div class="fb-dot" id="fb-dot"></div>
+    <span id="fb-text" style="color:#888;font-size:11px;">Conectando Firebase...</span>
+  </div>
+</div>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-logo"><img id="logo-img" src="" alt="Valor Log"></div>
+  <div class="header-info">
+    <div class="company">Valor Log Armazém Geral</div>
+    <div class="title">Dashboard de Faturamento</div>
+    <div class="sub" id="header-sub">Carregando dados...</div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tabs-wrap">
+  <nav class="tabs">
+    <button class="tab active"  onclick="switchTab('visao',this)">Visão geral</button>
+    <button class="tab"         onclick="switchTab('mensal',this)">Mês a mês</button>
+    <button class="tab"         onclick="switchTab('ranking',this)">Ranking</button>
+    <button class="tab"         onclick="switchTab('analise',this)">Análise mensal</button>
+    <button class="tab" id="tab-importar" onclick="switchTab('importar',this)">📂 Importar dados</button>
+  </nav>
+</div>
+
+<!-- ===== VISÃO GERAL ===== -->
+<div id="pane-visao" class="pane active">
+  <div class="filters">
+    <label>Mês:</label><select id="f-mes" onchange="applyFilters()"><option value="">Todos</option></select>
+    <label>Serviço:</label><select id="f-svc" onchange="applyFilters()"><option value="">Todos</option></select>
+    <label>Cliente:</label><select id="f-cli" onchange="applyFilters()"><option value="">Todos</option></select>
+    <button class="btn btn-ghost" onclick="resetFilters()">Limpar</button>
+  </div>
+  <div class="kpi-row" id="kpi-row"></div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Faturamento mensal</div>
+      <div style="position:relative;height:220px;"><canvas id="ch-mensal" role="img" aria-label="Faturamento mensal"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Mix de serviços</div>
+      <div id="leg-svc" class="legend"></div>
+      <div style="position:relative;height:190px;"><canvas id="ch-svc" role="img" aria-label="Mix de serviços"></canvas></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>🏆 Top 10 clientes</div>
+    <div id="cli-top"></div>
+  </div>
+</div>
+
+<!-- ===== MÊS A MÊS ===== -->
+<div id="pane-mensal" class="pane">
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>Evolução mensal</div>
+    <div style="position:relative;height:250px;"><canvas id="ch-mensal2" role="img" aria-label="Evolução mensal"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>Tabela mensal</div>
+    <div class="table-wrap"><table id="tbl-mensal"></table></div>
+  </div>
+</div>
+
+<!-- ===== RANKING ===== -->
+<div id="pane-ranking" class="pane">
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>🏆 Ranking de serviços</div>
+      <div id="svc-rank"></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>🏆 Ranking de clientes</div>
+      <div id="cli-rank"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>Composição por mês</div>
+    <div id="leg-mix" class="legend"></div>
+    <div style="position:relative;height:230px;"><canvas id="ch-mix" role="img" aria-label="Mix por mês"></canvas></div>
+  </div>
+</div>
+
+<!-- ===== ANÁLISE MENSAL ===== -->
+<div id="pane-analise" class="pane">
+  <div class="filters">
+    <label>Mês:</label>
+    <select id="sel-mes" onchange="renderAnalise()"></select>
+  </div>
+  <div class="vs-grid" id="vs-kpis"></div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Serviços – atual vs anterior</div>
+      <div id="leg-vs" class="legend"></div>
+      <div style="position:relative;height:210px;"><canvas id="ch-vs" role="img" aria-label="Comparativo serviços"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>🏆 Top clientes do mês</div>
+      <div id="vs-cli"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="dot"></span>Detalhes do mês – todas as notas</div>
+    <div class="table-wrap"><table id="tbl-mes"></table></div>
+  </div>
+</div>
+
+<!-- ===== IMPORTAR DADOS ===== -->
+<div id="pane-importar" class="pane">
+
+  <!-- VIEWER LOCK -->
+  <div id="viewer-lock" class="lock-card" style="display:none;">
+    <div style="font-size:48px;margin-bottom:12px;">🔒</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:8px;">Acesso restrito</div>
+    <div style="font-size:13px;color:var(--text2);">Apenas administradores podem importar dados.<br>Altere para o modo ADM para acessar.</div>
+  </div>
+
+  <!-- ADMIN PANEL -->
+  <div id="admin-panel">
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-title"><span class="dot"></span>Como funciona <span class="badge-adm">ADM</span></div>
+      <ul class="step-list">
+        <li><div class="step-num">1</div><div class="step-text">Exporte o relatório do sistema como <strong>.xls ou .xlsx</strong> com as colunas padrão: <code>Dt. emissão</code>, <code>Produto master</code>, <code>Nr. nota</code>, <code>Pessoa</code>, <code>Qt. item</code>, <code>Vl. total vendido</code>.</div></li>
+        <li><div class="step-num">2</div><div class="step-text">Arraste o arquivo na área abaixo ou clique para selecionar. O sistema valida as colunas automaticamente.</div></li>
+        <li><div class="step-num">3</div><div class="step-text">Revise a prévia e clique em <strong>Confirmar importação</strong>. Os dados são salvos no <strong>Firebase</strong> em tempo real.</div></li>
+        <li><div class="step-num">4</div><div class="step-text">Todos os usuários (visualização) veem o dashboard atualizado <strong>automaticamente</strong>, sem precisar recarregar a página.</div></li>
+      </ul>
+    </div>
+
+    <div id="msg-ok"  class="msg-ok"></div>
+    <div id="msg-err" class="msg-err"></div>
+
+    <div class="upload-zone" id="drop-zone"
+         onclick="document.getElementById('file-inp').click()"
+         ondragover="event.preventDefault();this.classList.add('drag')"
+         ondragleave="this.classList.remove('drag')"
+         ondrop="this.classList.remove('drag');handleDrop(event)">
+      <div class="upload-icon">📊</div>
+      <div class="upload-title">Clique ou arraste o arquivo aqui</div>
+      <div class="upload-sub">Formatos aceitos: .xls · .xlsx · .csv</div>
+      <input type="file" id="file-inp" accept=".xls,.xlsx,.csv" onchange="handleFile(this.files[0])">
+    </div>
+
+    <div class="progress-wrap" id="prog-wrap">
+      <div class="progress-text" id="prog-text">Processando...</div>
+      <div class="progress-bar-bg"><div class="progress-bar" id="prog-bar"></div></div>
+    </div>
+
+    <div id="preview-wrap" style="display:none;">
+      <div class="card">
+        <div class="card-title"><span class="dot"></span>Prévia dos dados</div>
+        <div class="table-wrap"><table id="tbl-preview"></table></div>
+        <div style="margin-top:14px;display:flex;gap:10px;">
+          <button class="btn btn-orange" onclick="confirmImport()">✅ Confirmar e salvar no Firebase</button>
+          <button class="btn btn-ghost"  onclick="cancelImport()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="dot"></span>Histórico de importações</div>
+      <div class="table-wrap"><table id="tbl-hist"></table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Constantes ──
+const LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAARMAAAC3CAMAAAAGjUrGAAAA0lBMVEUAAAD7bB//byD/biD/cSCoSBWZQhM6GQe3TxdUJAokEATbXhsyFQb5ax9mLA3jYhyLPBHqZR2FORDRWhphKgyeRBORPhLGVRjz4wXwZx7pZB3KVxm+UhewpAOxTBbAswSkmQN1Mg52bgKUigNLRgHt3QTi0wREHQhYUgGroAORhwNrZALPwQS3qwPYygRiWwJKIAkqEgV7NQ9ZJgubkAOCeQJ+dgIZCwMbCwMKCQAvLAE3MwFCPQHGuARcVgIuFAYQDwAhHwEYFgAoJgH+7QU7NwA5CLBmAAAKjklEQVR4nO2cCXebOhOGxUh4I7bjeAFix0u8JF7jpHaWNmm/3jb//y99GrFb3PbctjGuM885CQYEjF5GKzCMEQRBEARBEARBEEQGmEJUsrbh0GgCNLK24dAgTXRIEx3SRIc00SFNdEgTHdJEhzTRIU10SBMd0kSHNNEhTXRIEx3SRIc00SFNdEgTHdJEJwfwIWsbDoxSmfN21kYcGC53OT3MSGBBmVV5OWszDokCQJ7lBXSzNuRwaHnPAE0QV1mbcig0hGipHy4/z9iUQyEPUPB+NQS0srXlUCiDFfy0OTxmacqhUAU3WuG8np0lB4MNvBStnYEYZGfLgSCHOcX4ukWdlIEQd4kNJ2GF+15ZA5g7m2QnZZ2JLQfCgwH6uO+dd1JqkJL9DwJy+zflUKhDan3aASilbX8PdHHgl8b77aScin+bWLt7r52UhjBqFkA7LfcWN/ZuT9Y8Dsw6NwxD/nHgHW167cs766Q0crYrgKMkHhygXCgmEzVBFNMPPzbW7PQcACI5lCTtqgAQrpmYTnJ5LSsr98btoGtxcVsAYxdosZNmjXMQteaXMH1RQDNDc9+cSrNdVqUFSgWua4IdtCswXOlBotp68A+SnZTbLI1+Q+46tai0/LsmRYCnYqGM3mKdeUca3Prhmf9eqvHa44eanMhFQYoiaeNQ+W53xHw0WHERfqqJCdVKG7B9tiusfqydlP+sifwPBjqLYXPeydj6t+FXNBEwOJXHyaTH+bD01zSRUpS5K6sicM30YeLfzK9rAndfOlIU2T7njmzm4Dc0OZXjY8MsG9g+n2acjT/Kb2lyBpyVZDOELXT9LOOc/Dl+W5M8wJeuFEXKYh/JpMqf0CSfg/MBuos4jofJf0STJpwzwdv8SB6w/yFNalITkzQhTUgT0oQ0SRJpArKLUVITJJw08eCDQVOUCmANBnVOmniaNCo5pUmj0SZNwrIDVHYUVMfqkCY6pIkOaaJDmuiQJjqkiQ5pokOa6JAmOqSJDmmiQ5rokCY6pInOb2hypjS5BbjNqWde702TtfcpRqBJAzUxK11u5Aqc18+54eJL10eiCb4PjC8+Iuma8ObtungKPNc0u1Vets5dNSen3jrHd6y91/4U4ki+6yldNQanzW6nbtXK4rYjQoEiUdTba4avXSSAlMStWVa7UzDN3OldpbG+evj59f4+vhQrdy2zYNerLgcRZR942a1adbvTNXOts0GluD45yvz/lMerD4O7QaOYP7J3swiCIAiCIAiCIIhjpRQN79WnIyBEFPrHFpD4SOBqZz04h1ktM7PWjX+/dS5CXC3kY1H4V0uS755XWbtq7g6qiwXXZlVrf9NP58FckJoGbIEhwnAdTzg1Fou0xopgpAS86QrggnXkPzvaWItHL+A74ZQakDbpaAsur2ZxEAkRH+tyu8XKHPYWbOcUv63HaTLlAS6PhT5q4i6IfdSYqkkVU0lNpAhQDj80d3kInj5569M0KbneHcDpXjWH67NWJ5CaoC37CiyDl6x3bNsuesZGH6WpWeR4gJs0TaoqukeVNQXmKYwcZNoB+J4otxPHpGlSRi3AZh2B6UNRbrna3mUWbk+JX/UmFLgBwW9pPw93VMDgsmSJ6B6naGJKJUTnMfiZFmz5Fu9wYkuKJjbmWNVkDwUR/GSe5F7akzZeaj/fy10JIwg48SAMHkVuwZejS8KIhVvTNcEqRwSe1cCVlEhsplQ9EftE12SNOgRBzs9wxZu8HcifPAgZYuIs73/L3K8iS7Dv8vJORyFwb6VA3dhOlqZJDuLlQlZAaR+ay0TJOEu6JuisUSQQ/OLWu468LxDFOBgMBnsKDn8nLfS+VSzHI0/IuytO2CDcydI0kTaLWBPMk+2Uj2yDRGLOXtfEjRdadiKCakx6XsoJ90AgBeY/uimGZ1dcJ10TmZe4zfWwbhq0QqQkO0E+dE0gUZdj7a5Omw8cz3QD9hTwwPMIliwngfdgeQo8QdekHGsimHJ68aR+ueGTLnwZfyeUkqYJVmTxpqnqu81aaqKqsw4ELXv8cm9ISdUcymOj+rTqC4RfSAf1bqqfxAP3WaGf1OKPTHdbi1Q/ibtS4CdoknIMG/wnjXsLK1NXt6Urb3LY54pao1j7nFqfQCySFIT1SY17z0aVNLttka5Jjceb63xYn8jDlea586oEey77imgmeyJwxhL9M+yqP4Q7/dZW10SOBWJdEjPyKZnJcqNSaXSw07L7UDS93Yl8tB2+cICaJzqRsLcv12VP3MIaNurHtzqdXLTT7++n9NnwUXnQiA6wf+J7TS04yNVq2DRN8iKW3RyEnbwKbg8qIwzxtb+QxdjNcFPbUW+nX0emaKLsb2Ml/Kj6n0GzEGpSxK0/rU8Y+pMoYH84b8d1tsL+7drCJPsLyPQE4bs0von1CBz2eFlVmpQsf7tX96ClXLiyk8njo+hQE3V3d0qP0uQkOI8X6t3Fw0WdtdW4JvSsBwyuA6LDqmr7PkMP4XAjVst9EDw+rg12KU2K/r5gTsGKjYvdMO+RJji624mUqoaaleA8Xml7qsXGxbHCdlKOxsUiOZR8Y9DDYz0Ee/flI8+XPU38wH1hd70J3vwJiFibICuhIJRhQ+z6vNKkEZwnaLe68jxSE9lYJeP92cH8Cd9zHJkq8Ng4rcx38GYu8jLzZ3m/+xSLntuq11jTasYnSSwe1ayFXUdZy/MM1r6fQBj+sNS06qyjz6flzWqH1etHFVmHIAiCIAiCIIj3xvXyKWsTNIav7PJaLj/P8D+bPaut8+nwf3JxPxzi1k8z+e96MxyO5PLj7B5T3MzYzU2UhF1Oh17mRtP+N1wfbvCo+ZzNPjF1jtHHLZ5mONx8lcvtdKtS9/of5eJpOJ2rc+O2++lsDxn/AZMZG6M5L+MlrjqX+H/kzBe4+tIbOjJH199x23brKBHGY0wydS77U7lc9GaO1PFaHnGhTujMliu56L3co3a9JXM+4+YbpzfCA2eTy+0/UpLx5/FWpb7A1Berm+8j/0KXzufJZp8SaCyl0dJGNt5McHWsNLlx2LQnly8b5qCpjkp68aL+98foLtPFy6Yvl4uNyvR8zKZKVHkihn7S63unv2CO8qPPq8kNXmG2UttnC+WeX53X+4mXbPPsX2i7Cg7Oiu3qGo16Hn9z0KV3NFmtUAdPk5GDXs5W1yu8wdPNZNlnKZo8T/BI1ptM0E9CTW5Wm6XSZLxCf5ot5qtL1OR562vCggvJDRlrMhpvMC/b1dzBIqTKUaRJ/9p5DTRZeQ7t3KtiNd0Mx32ma/J0LYsTS/iJV3Ymn8boIpGfvMwSfrIcHYyfsLEq18ve/QoNGW/myrbRC+Zw0Vd3WZl678znsm6ZT+4vMBcX/W8OHrBYXmLxunFGC0+T7/OLhVz2enOUd7kY4W7UhK2Un0xuLv/BxetEXvfJuZ+q+kQmu/brk/vxszIlQ2abV/w/YnPUpt+fYunZLvuqcZizvizmr335ey53SbNvtuxTX7Ywl3M2xEzP+n3lWv4RMsHyAk+47U/xqK/9nmqm2POQzYe4W54GE256Qz/1s5cMr/6pryxShZIgCIIgCIIgCIIgCIIgCIIgCIIgCIIgCILYD/8HPpXaMCSX460AAAAASUVORK5CYII=";
+document.getElementById("logo-img").src = LOGO;
+
+const LOCAL_DATA = [{"data":"2026-01-07","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"1","qtd":1,"valor":234440.21},{"data":"2026-01-13","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"6","qtd":1,"valor":4462.11},{"data":"2026-01-08","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"2","qtd":1,"valor":33653.37},{"data":"2026-01-09","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"3","qtd":1,"valor":421.05},{"data":"2026-01-09","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"4","qtd":1,"valor":1341.05},{"data":"2026-01-13","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"5","qtd":1,"valor":736.84},{"data":"2026-01-15","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"7","qtd":1,"valor":110305.21},{"data":"2026-01-15","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"8","qtd":1,"valor":10696.74},{"data":"2026-01-16","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"10","qtd":1,"valor":2080.0},{"data":"2026-01-16","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"11","qtd":1,"valor":207.16},{"data":"2026-01-16","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"12","qtd":1,"valor":11083.58},{"data":"2026-01-16","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"13","qtd":1,"valor":48229.68},{"data":"2026-01-20","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"14","qtd":1,"valor":5054.21},{"data":"2026-01-20","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"15","qtd":1,"valor":39444.53},{"data":"2026-01-20","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"16","qtd":1,"valor":6526.31},{"data":"2026-01-21","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"17","qtd":1,"valor":1050.0},{"data":"2026-01-21","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"19","qtd":1,"valor":14574.74},{"data":"2026-01-21","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"18","qtd":1,"valor":2080.0},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"20","qtd":1,"valor":42846.0},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"21","qtd":1,"valor":4304.21},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"22","qtd":1,"valor":1473.68},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"23","qtd":1,"valor":245453.16},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"24","qtd":1,"valor":9560.43},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"26","qtd":1,"valor":7568.95},{"data":"2026-01-22","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"25","qtd":1,"valor":110058.84},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"28","qtd":1,"valor":11842.11},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"27","qtd":1,"valor":87932.48},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"30","qtd":1,"valor":4590.0},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"29","qtd":1,"valor":20670.0},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"31","qtd":1,"valor":1100.0},{"data":"2026-01-23","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"32","qtd":1,"valor":972.48},{"data":"2026-01-26","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"34","qtd":1,"valor":5923.26},{"data":"2026-01-26","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"35","qtd":1,"valor":25791.05},{"data":"2026-01-26","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"36","qtd":1,"valor":260244.98},{"data":"2026-01-28","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"37","qtd":1,"valor":1820.0},{"data":"2026-01-28","mes_ano":"2026-01","mes_label":"Jan/2026","mes_num":1,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"38","qtd":1,"valor":270.0},{"data":"2026-02-03","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"39","qtd":1,"valor":200.0},{"data":"2026-02-04","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"40","qtd":1,"valor":3043.16},{"data":"2026-02-09","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"41","qtd":1,"valor":166928.68},{"data":"2026-02-10","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"42","qtd":1,"valor":42123.16},{"data":"2026-02-10","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"43","qtd":1,"valor":119446.01},{"data":"2026-02-10","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"46","qtd":1,"valor":736.84},{"data":"2026-02-10","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"45","qtd":1,"valor":4025.26},{"data":"2026-02-10","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"47","qtd":1,"valor":7114.36},{"data":"2026-02-11","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"48","qtd":1,"valor":20378.84},{"data":"2026-02-11","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"49","qtd":1,"valor":7578.95},{"data":"2026-02-16","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"51","qtd":1,"valor":48229.68},{"data":"2026-02-16","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"52","qtd":1,"valor":2080.0},{"data":"2026-02-19","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000323)","nr_nota":"53","qtd":1,"valor":450.0},{"data":"2026-02-19","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"54","qtd":1,"valor":4007.37},{"data":"2026-02-19","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"55","qtd":1,"valor":450.0},{"data":"2026-02-19","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"56","qtd":1,"valor":450.0},{"data":"2026-02-20","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"57","qtd":1,"valor":2080.0},{"data":"2026-02-20","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"58","qtd":1,"valor":5492.11},{"data":"2026-02-20","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"59","qtd":1,"valor":207.16},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"60","qtd":1,"valor":693.68},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"61","qtd":1,"valor":1774.1},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"62","qtd":1,"valor":37848.32},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"64","qtd":1,"valor":4994.27},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"65","qtd":1,"valor":11083.58},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"66","qtd":1,"valor":14570.0},{"data":"2026-02-23","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"67","qtd":1,"valor":3000.0},{"data":"2026-02-24","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"68","qtd":1,"valor":1600.0},{"data":"2026-02-24","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"69","qtd":1,"valor":19106.21},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"70","qtd":1,"valor":87872.45},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"71","qtd":1,"valor":5526.32},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"72","qtd":1,"valor":9598.26},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"73","qtd":1,"valor":137524.75},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"75","qtd":1,"valor":245991.4},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"76","qtd":1,"valor":6340.0},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"77","qtd":1,"valor":1890.0},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"78","qtd":1,"valor":264658.37},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"79","qtd":1,"valor":48224.11},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"80","qtd":1,"valor":8544.32},{"data":"2026-03-02","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"81","qtd":1,"valor":995.0},{"data":"2026-02-25","mes_ano":"2026-02","mes_label":"Feb/2026","mes_num":2,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"74","qtd":1,"valor":4920.96},{"data":"2026-03-03","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"82","qtd":1,"valor":4384.21},{"data":"2026-03-09","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"90","qtd":1,"valor":450.0},{"data":"2026-03-09","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"84","qtd":1,"valor":194866.0},{"data":"2026-03-09","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"85","qtd":1,"valor":47063.72},{"data":"2026-03-10","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"87","qtd":1,"valor":784.52},{"data":"2026-03-10","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"88","qtd":1,"valor":784.52},{"data":"2026-03-10","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"89","qtd":1,"valor":784.52},{"data":"2026-03-11","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"91","qtd":1,"valor":118646.24},{"data":"2026-03-11","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"92","qtd":1,"valor":1579.64},{"data":"2026-03-11","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"93","qtd":1,"valor":526.32},{"data":"2026-03-13","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"95","qtd":1,"valor":4697.75},{"data":"2026-03-13","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"96","qtd":1,"valor":361.22},{"data":"2026-03-13","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"97","qtd":1,"valor":450.0},{"data":"2026-03-16","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"98","qtd":1,"valor":450.0},{"data":"2026-03-17","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"101","qtd":1,"valor":9771.62},{"data":"2026-03-17","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"100","qtd":1,"valor":21370.09},{"data":"2026-03-17","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"102","qtd":1,"valor":2736.84},{"data":"2026-03-18","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"103","qtd":1,"valor":2023.26},{"data":"2026-03-18","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000309)","nr_nota":"104","qtd":1,"valor":1030.0},{"data":"2026-03-18","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"105","qtd":1,"valor":11083.58},{"data":"2026-03-18","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"107","qtd":1,"valor":48229.68},{"data":"2026-03-19","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"108","qtd":1,"valor":207.16},{"data":"2026-03-19","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"109","qtd":1,"valor":247344.4},{"data":"2026-03-19","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"A ALVES DE SOUSA INDUSTRIA E COMERCIO DE MOTOS LTD (000323)","nr_nota":"110","qtd":1,"valor":770.0},{"data":"2026-03-19","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"111","qtd":1,"valor":5029.58},{"data":"2026-03-19","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"112","qtd":1,"valor":421.05},{"data":"2026-03-23","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"114","qtd":1,"valor":2080.0},{"data":"2026-03-23","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"115","qtd":1,"valor":127434.24},{"data":"2026-03-23","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"116","qtd":1,"valor":3663.62},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"117","qtd":1,"valor":12384.97},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"118","qtd":1,"valor":6730.0},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"119","qtd":1,"valor":1180.0},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"120","qtd":1,"valor":4661.96},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"121","qtd":1,"valor":87479.42},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"122","qtd":1,"valor":10105.26},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"123","qtd":1,"valor":9988.56},{"data":"2026-03-24","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"124","qtd":1,"valor":49933.69},{"data":"2026-03-25","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"125","qtd":1,"valor":3565.42},{"data":"2026-03-25","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"126","qtd":1,"valor":5509.08},{"data":"2026-03-25","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"127","qtd":1,"valor":772.43},{"data":"2026-03-25","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"129","qtd":1,"valor":772.43},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"130","qtd":1,"valor":3530.0},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"131","qtd":1,"valor":910.0},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"132","qtd":1,"valor":170.0},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"133","qtd":1,"valor":15497.97},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"134","qtd":1,"valor":286031.23},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"135","qtd":1,"valor":52933.05},{"data":"2026-03-26","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"136","qtd":1,"valor":12789.02},{"data":"2026-03-30","mes_ano":"2026-03","mes_label":"Mar/2026","mes_num":3,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION ENERGIA DO BRASIL LTDA (000386)","nr_nota":"138","qtd":1,"valor":10735.35},{"data":"2026-04-14","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"141","qtd":1,"valor":205092.63},{"data":"2026-04-15","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"142","qtd":1,"valor":10373.6},{"data":"2026-04-15","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"144","qtd":1,"valor":477.47},{"data":"2026-04-15","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"145","qtd":1,"valor":106253.81},{"data":"2026-04-20","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"147","qtd":1,"valor":48229.68},{"data":"2026-04-20","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"148","qtd":1,"valor":11083.58},{"data":"2026-04-22","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"149","qtd":1,"valor":247247.87},{"data":"2026-04-22","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"150","qtd":1,"valor":245.75},{"data":"2026-04-22","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"151","qtd":1,"valor":12970.51},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"152","qtd":1,"valor":3234.81},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"152","qtd":1,"valor":2080.0},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"155","qtd":1,"valor":2736.84},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"155","qtd":1,"valor":772.43},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"156","qtd":1,"valor":2530.0},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"157","qtd":1,"valor":13380.0},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"158","qtd":1,"valor":348356.81},{"data":"2026-04-23","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"159","qtd":1,"valor":50183.95},{"data":"2026-04-24","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"160","qtd":1,"valor":10985.43},{"data":"2026-04-24","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"161","qtd":1,"valor":66216.94},{"data":"2026-04-24","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"166","qtd":1,"valor":8526.32},{"data":"2026-04-24","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"163","qtd":1,"valor":9988.56},{"data":"2026-04-27","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"164","qtd":1,"valor":12580.23},{"data":"2026-04-27","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"165","qtd":1,"valor":1910.98},{"data":"2026-04-28","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"166","qtd":1,"valor":2000.0},{"data":"2026-04-28","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"168","qtd":1,"valor":838.55},{"data":"2026-04-28","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"169","qtd":1,"valor":4148.68},{"data":"2026-04-29","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"170","qtd":1,"valor":3370.0},{"data":"2026-04-29","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"171","qtd":1,"valor":910.0},{"data":"2026-04-29","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"99.01.01 - Serviços Sem Incidência de ISSQN.","cliente":"AP PNEUS BR LTDA (000400)","nr_nota":"173","qtd":1,"valor":1621.0},{"data":"2026-04-30","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"175","qtd":1,"valor":2038.14},{"data":"2026-04-30","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"176","qtd":1,"valor":1108.42},{"data":"2026-04-02","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"139","qtd":1,"valor":1960.0},{"data":"2026-05-05","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"177","qtd":1,"valor":105302.84},{"data":"2026-05-05","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"178","qtd":1,"valor":105302.84},{"data":"2026-05-07","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION ENERGIA DO BRASIL LTDA (000386)","nr_nota":"179","qtd":1,"valor":7593.93},{"data":"2026-05-08","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"180","qtd":1,"valor":3548.31},{"data":"2026-05-08","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"181","qtd":1,"valor":2733.68},{"data":"2026-05-08","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"183","qtd":1,"valor":49207.2},{"data":"2026-04-29","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CAL-COMP INDUSTRIA E COMERCIO DE ELETRONICOS E INF (000411)","nr_nota":"174","qtd":1,"valor":5356.06},{"data":"2026-04-17","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"146","qtd":1,"valor":7176.53},{"data":"2026-05-14","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"184","qtd":1,"valor":96768.5},{"data":"2026-05-14","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"185","qtd":1,"valor":1941.73},{"data":"2026-05-14","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"186","qtd":1,"valor":11486.77},{"data":"2026-05-19","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"195","qtd":1,"valor":2832.21},{"data":"2026-05-15","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"187","qtd":1,"valor":245.75},{"data":"2026-05-15","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"188","qtd":1,"valor":2736.84},{"data":"2026-05-18","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"190","qtd":1,"valor":3494.63},{"data":"2026-05-18","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"191","qtd":1,"valor":3494.63},{"data":"2026-05-18","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"192","qtd":1,"valor":3494.63},{"data":"2026-05-19","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"193","qtd":1,"valor":93255.47},{"data":"2026-04-15","mes_ano":"2026-04","mes_label":"Apr/2026","mes_num":4,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"194","qtd":1,"valor":48229.68},{"data":"2026-05-19","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"195","qtd":1,"valor":11083.58},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"196","qtd":1,"valor":2080.0},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"197","qtd":1,"valor":1626.32},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"200","qtd":1,"valor":43599.18},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"201","qtd":1,"valor":48452.65},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CAL-COMP INDUSTRIA E COMERCIO DE ELETRONICOS E INF (000411)","nr_nota":"202","qtd":1,"valor":94.74},{"data":"2026-05-21","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"203","qtd":1,"valor":245910.41},{"data":"2026-05-22","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"204","qtd":1,"valor":96376.57},{"data":"2026-05-22","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"205","qtd":1,"valor":1418.49},{"data":"2026-05-22","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"206","qtd":1,"valor":13090.0},{"data":"2026-05-22","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"207","qtd":1,"valor":1990.0},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"209","qtd":1,"valor":22501.08},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"211","qtd":1,"valor":5859.68},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"212","qtd":1,"valor":285637.3},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"213","qtd":1,"valor":48469.84},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"99.01.01 - Serviços Sem Incidência de ISSQN.","cliente":"AP PNEUS BR LTDA (000400)","nr_nota":"214","qtd":1,"valor":1621.0},{"data":"2026-05-26","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"215","qtd":1,"valor":23157.89},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"198","qtd":1,"valor":14555.93},{"data":"2026-05-20","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"199","qtd":1,"valor":3835.54},{"data":"2026-05-26","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"216","qtd":1,"valor":61381.4},{"data":"2026-05-26","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"217","qtd":1,"valor":5052.63},{"data":"2026-05-27","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"218","qtd":1,"valor":9988.56},{"data":"2026-05-27","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"219","qtd":1,"valor":12544.86},{"data":"2026-05-19","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"194","qtd":1,"valor":48229.68},{"data":"2026-05-28","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"222","qtd":1,"valor":540.0},{"data":"2026-05-28","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"221","qtd":1,"valor":3340.0},{"data":"2026-05-28","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"220","qtd":1,"valor":550.0},{"data":"2026-05-22","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"208","qtd":1,"valor":1000.0},{"data":"2026-05-25","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"210","qtd":1,"valor":5307.09},{"data":"2026-05-29","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION ENERGIA DO BRASIL LTDA (000386)","nr_nota":"224","qtd":1,"valor":4402.46},{"data":"2026-05-29","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"CHALLENGER DA AMAZONIA INDUSTRIA DE PECAS PARA VEI (000321)","nr_nota":"223","qtd":1,"valor":268.42},{"data":"2026-05-29","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"BRASITECH INDUSTRIA E COMERCIO DE APARELHOS PARA B (000410)","nr_nota":"225","qtd":1,"valor":150.0},{"data":"2026-05-08","mes_ano":"2026-05","mes_label":"May/2026","mes_num":5,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"182","qtd":1,"valor":2832.21},{"data":"2026-06-02","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"99.01.01 - Serviços Sem Incidência de ISSQN.","cliente":"AP PNEUS BR LTDA (000400)","nr_nota":"226","qtd":1,"valor":1621.0},{"data":"2026-06-03","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"227","qtd":1,"valor":3494.63},{"data":"2026-06-03","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"228","qtd":1,"valor":78696.68},{"data":"2026-06-03","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"229","qtd":1,"valor":23157.89},{"data":"2026-06-08","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"230","qtd":1,"valor":2785.26},{"data":"2026-06-10","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"232","qtd":1,"valor":86965.86},{"data":"2026-06-10","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"233","qtd":1,"valor":2338.63},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"99.01.01 - Serviços Sem Incidência de ISSQN.","cliente":"AP PNEUS BR LTDA (000400)","nr_nota":"172","qtd":1,"valor":1621.0},{"data":"2026-06-15","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"234","qtd":1,"valor":75653.36},{"data":"2026-06-17","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"236","qtd":1,"valor":251.12},{"data":"2026-06-17","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"237","qtd":1,"valor":3494.63},{"data":"2026-06-18","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"238","qtd":1,"valor":715.79},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"241","qtd":1,"valor":7527.26},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"242","qtd":1,"valor":48229.68},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"243","qtd":1,"valor":2736.84},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"245","qtd":1,"valor":2736.84},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BAJAJ DO BRASIL COMERCIO DE MOTOCICLETAS LTDA (000172)","nr_nota":"246","qtd":1,"valor":5392.17},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"248","qtd":1,"valor":81451.92},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"249","qtd":1,"valor":3037.58},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"251","qtd":1,"valor":5210.53},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"252","qtd":1,"valor":13308.36},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"253","qtd":1,"valor":233794.58},{"data":"2026-06-08","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"231","qtd":1,"valor":782.91},{"data":"2026-06-15","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"235","qtd":1,"valor":26176.96},{"data":"2026-06-18","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"239","qtd":1,"valor":758.53},{"data":"2026-06-18","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"240","qtd":1,"valor":748.29},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"247","qtd":1,"valor":11083.58},{"data":"2026-06-22","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"254","qtd":1,"valor":13830.0},{"data":"2026-06-22","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"255","qtd":1,"valor":1620.0},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"256","qtd":1,"valor":10278.24},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"257","qtd":1,"valor":1263.16},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"258","qtd":1,"valor":13822.56},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"259","qtd":1,"valor":1289.01},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION ENERGIA DO BRASIL LTDA (000386)","nr_nota":"260","qtd":1,"valor":9280.41},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"262","qtd":1,"valor":9724.83},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"263","qtd":1,"valor":9988.56},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"HENKEL LTDA (000425)","nr_nota":"264","qtd":1,"valor":3743.7},{"data":"2026-06-23","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"266","qtd":1,"valor":9724.83},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"271","qtd":1,"valor":66933.89},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"267","qtd":1,"valor":91833.61},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"268","qtd":1,"valor":4987.61},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"269","qtd":1,"valor":272529.6},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"270","qtd":1,"valor":48026.57},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"272","qtd":1,"valor":25516.45},{"data":"2026-06-24","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"273","qtd":1,"valor":3798.23},{"data":"2026-06-25","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"274","qtd":1,"valor":270.0},{"data":"2026-06-25","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"275","qtd":1,"valor":4690.0},{"data":"2026-06-19","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"17.03 - Planejamento, coordenação, programação ou organização técnica, financeira ou administrativa.","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"250","qtd":1,"valor":23157.89},{"data":"2026-06-26","mes_ano":"2026-06","mes_label":"Jun/2026","mes_num":6,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"276","qtd":1,"valor":270.0},{"data":"2026-07-03","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"280","qtd":1,"valor":13894.74},{"data":"2026-07-03","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"281","qtd":1,"valor":74757.21},{"data":"2026-07-06","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"289","qtd":1,"valor":1369.99},{"data":"2026-07-01","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"278","qtd":1,"valor":2532.28},{"data":"2026-07-02","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SUPER CANCUN COMERCIO DE PRODUTOS ALIMENTICIOS LTD (000428)","nr_nota":"279","qtd":1,"valor":38750.76},{"data":"2026-07-06","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"282","qtd":1,"valor":3043.16},{"data":"2026-07-06","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"287","qtd":1,"valor":758.54},{"data":"2026-07-06","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"288","qtd":1,"valor":758.6},{"data":"2026-07-07","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"291","qtd":1,"valor":3494.63},{"data":"2026-07-07","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"290","qtd":1,"valor":758.54},{"data":"2026-07-08","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000353)","nr_nota":"292","qtd":1,"valor":13894.74},{"data":"2026-07-10","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BAJAJ DO BRASIL COMERCIO DE MOTOCICLETAS LTDA (000172)","nr_nota":"293","qtd":1,"valor":6674.62},{"data":"2026-07-10","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"BAJAJ DO BRASIL COMERCIO DE MOTOCICLETAS LTDA (000172)","nr_nota":"294","qtd":1,"valor":93533.79},{"data":"2026-07-13","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"295","qtd":1,"valor":77187.5},{"data":"2026-07-13","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"296","qtd":1,"valor":3037.58},{"data":"2026-07-13","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"297","qtd":1,"valor":22006.89},{"data":"2026-07-13","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"ROCHA E PAIVA LTDA (000430)","nr_nota":"298","qtd":1,"valor":1894.74},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"GLA AMAZONIA INDUSTRIA DE EMBALAGENS PLASTICOS LTD (000434)","nr_nota":"299","qtd":1,"valor":10631.58},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"301","qtd":1,"valor":300.0},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"303","qtd":1,"valor":74150.37},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"311","qtd":1,"valor":103198.48},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"312","qtd":1,"valor":11843.34},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"313","qtd":1,"valor":239959.49},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"314","qtd":1,"valor":2175.72},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"315","qtd":1,"valor":3494.63},{"data":"2026-07-16","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION ENERGIA DO BRASIL LTDA (000386)","nr_nota":"320","qtd":1,"valor":8735.9},{"data":"2026-07-16","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"316","qtd":1,"valor":600.0},{"data":"2026-07-16","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"317","qtd":1,"valor":8821.37},{"data":"2026-07-16","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"318","qtd":1,"valor":3879.63},{"data":"2026-07-16","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"319","qtd":1,"valor":4803.44},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"308","qtd":1,"valor":15334.31},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"309","qtd":1,"valor":1030.83},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"321","qtd":1,"valor":2736.84},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"323","qtd":1,"valor":2736.84},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"ROCHA E PAIVA LTDA (000430)","nr_nota":"324","qtd":1,"valor":1263.15},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"HENKEL LTDA (000425)","nr_nota":"326","qtd":1,"valor":575.89},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"HENKEL LTDA (000425)","nr_nota":"327","qtd":1,"valor":650.35},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"328","qtd":1,"valor":48229.68},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"329","qtd":1,"valor":56622.53},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"NIPPON CARBIDE INDUSTRIA DO BRASIL LTDA (000210)","nr_nota":"330","qtd":1,"valor":5104.63},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"331","qtd":1,"valor":10175.4},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"EDITORA DO BRASIL SA (000338)","nr_nota":"332","qtd":1,"valor":662.24},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"305","qtd":1,"valor":16281.67},{"data":"2026-07-15","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"310","qtd":1,"valor":11731.9},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"300","qtd":1,"valor":450.0},{"data":"2026-07-14","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"302","qtd":1,"valor":300.0},{"data":"2026-07-17","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000156)","nr_nota":"325","qtd":1,"valor":11083.58},{"data":"2026-07-20","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"H.R.S. FLOW DO BRASIL COMERCIO DE SISTEMAS DE CAMA (000203)","nr_nota":"333","qtd":1,"valor":251.12},{"data":"2026-07-22","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"ROCHA E PAIVA LTDA (000430)","nr_nota":"334","qtd":1,"valor":526.31},{"data":"2026-07-22","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"335","qtd":1,"valor":19694.5},{"data":"2026-07-22","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"YAMADA BRASIL FABRICACAO DE ARTEFATOS DE MATERIAL  (000324)","nr_nota":"336","qtd":1,"valor":2526.32},{"data":"2026-07-23","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"GLA AMAZONIA INDUSTRIA DE EMBALAGENS PLASTICOS LTD (000434)","nr_nota":"337","qtd":1,"valor":2628.42},{"data":"2026-07-23","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"338","qtd":1,"valor":32744.31},{"data":"2026-07-23","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"WASION DA AMAZONIA INDUSTRIA DE INSTRUMENTOS ELETR (000364)","nr_nota":"339","qtd":1,"valor":902.97},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"340","qtd":1,"valor":15286.96},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SAKURA EXHAUST DO BRASIL LTDA (000258)","nr_nota":"341","qtd":1,"valor":61535.33},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"MK BR S.A (000297)","nr_nota":"342","qtd":1,"valor":235143.33},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"MK BR S.A (000297)","nr_nota":"343","qtd":1,"valor":47825.58},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"344","qtd":1,"valor":3100.0},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"345","qtd":1,"valor":11170.0},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"346","qtd":1,"valor":105363.02},{"data":"2026-07-24","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"347","qtd":1,"valor":14178.98},{"data":"2026-07-28","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"348","qtd":1,"valor":810.0},{"data":"2026-07-28","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"349","qtd":1,"valor":540.0},{"data":"2026-07-29","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"350","qtd":1,"valor":270.0},{"data":"2026-07-30","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"ROCHA E PAIVA LTDA (000430)","nr_nota":"351","qtd":1,"valor":1578.94},{"data":"2026-07-30","mes_ano":"2026-07","mes_label":"Jul/2026","mes_num":7,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"ROCHA E PAIVA LTDA (000430)","nr_nota":"352","qtd":1,"valor":789.47},{"data":"2026-08-05","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"10.05 AGENCIAMENTO DE CARGA","cliente":"SKYMARINE LOGISTICA LTDA (000337)","nr_nota":"354","qtd":1,"valor":1650.53},{"data":"2026-08-05","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"HIKVISION DO BRASIL COMERCIO DE EQUIPAMENTOS DE SE (000197)","nr_nota":"353","qtd":1,"valor":72193.42},{"data":"2026-08-06","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"355","qtd":1,"valor":3209.91},{"data":"2026-08-06","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"RIO NEGRO EMBALAGENS LTDA (000165)","nr_nota":"356","qtd":1,"valor":1781.56},{"data":"2026-08-06","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"SUPER CANCUN COMERCIO DE PRODUTOS ALIMENTICIOS LTD (000428)","nr_nota":"357","qtd":1,"valor":10654.83},{"data":"2026-08-07","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"SUPER CANCUN COMERCIO DE PRODUTOS ALIMENTICIOS LTD (000428)","nr_nota":"359","qtd":1,"valor":2051.02},{"data":"2026-08-07","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SUPER CANCUN COMERCIO DE PRODUTOS ALIMENTICIOS LTD (000428)","nr_nota":"358","qtd":1,"valor":86901.56},{"data":"2026-08-12","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"K F V TRANSPORTADORA LTDA (000447)","nr_nota":"360","qtd":1,"valor":947.37},{"data":"2026-08-12","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"STANLEY-ANGSTROM ELECTRIC DA AMAZONIA LTDA (000170)","nr_nota":"361","qtd":1,"valor":79209.74},{"data":"2026-08-12","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"BAJAJ DO BRASIL COMERCIO DE MOTOCICLETAS LTDA (000172)","nr_nota":"362","qtd":1,"valor":95081.75},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"368","qtd":1,"valor":114203.25},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"365","qtd":1,"valor":6727.41},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"366","qtd":1,"valor":100732.55},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"JABIL INDUSTRIAL DO BRASIL LTDA (000424)","nr_nota":"367","qtd":1,"valor":8330.84},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"17.05 - FORNECIMENTO DE MÃO DE OBRA","cliente":"INVENTUS POWER ELETRONICA DO BRASIL LTDA (000294)","nr_nota":"369","qtd":1,"valor":2736.84},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA","cliente":"UCB DA AMAZONIA S.A (000052)","nr_nota":"370","qtd":1,"valor":2736.84},{"data":"2026-08-14","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS","cliente":"SALCOMP INDUSTRIAL ELETRONICA DA AMAZONIA LTDA (000010)","nr_nota":"371","qtd":1,"valor":48334.68},{"data":"2026-08-17","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"373","qtd":1,"valor":22578.95},{"data":"2026-08-17","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"374","qtd":1,"valor":2526.32},{"data":"2026-08-17","mes_ano":"2026-08","mes_label":"Aug/2026","mes_num":8,"ano":2026,"servico":"16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL","cliente":"BEMOL S/A (000416)","nr_nota":"375","qtd":1,"valor":24000.0}];
+
+const SVC_SHORT = {
+  "ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA":"Armazenamento",
+  "16.02 OUTROS SERVIÇOS DE TRANSPORTE DE NATUREZA MUNICIPAL":"Transporte Mun.",
+  "10.05 AGENCIAMENTO DE CARGA":"Agenc. Carga",
+  "17.01 - ASSESSORIA E CONSULTORIA DE QUALQUER NATUREZA":"Consultoria",
+  "17.09 - PERÍCIAS, LAUDOS, EXAMES TÉCNICOS E ANÁLISES TÉCNICAS":"Perícias/Laudos",
+  "33.01 - SERVIÇOS DE DESEMBARAÇO ADUANEIRO, COMISSÁRIOS, DESPACHANTES E CONGÊNERES":"Desembaraço",
+  "17.05 - FORNECIMENTO DE MÃO DE OBRA":"Mão de Obra",
+  "99.01.01 - Serviços Sem Incidência de ISSQN.":"Sem ISSQN",
+  "17.03 - Planejamento, coordenação, programação ou organização técnica, financeira ou administrativa.":"Planejamento"
+};
+const CATS = ["#E8610A","#2a78d6","#1baf7a","#eda100","#9b59b6","#e87ba4","#008300","#e34948","#5d6d7e"];
+const TROPHY = ["🥇","🥈","🥉"];
+const fmt = v => "R$ " + Math.round(v).toLocaleString("pt-BR");
+const pct = (a,b) => b===0 ? 0 : ((a-b)/b*100);
+
+window.DATA = LOCAL_DATA;
+window.dashboardReady = false;
+let charts = {};
+let pendingData = null;
+let importHistory = [];
+let currentRole = "admin";
+
+// ── Toast ──
+function showToast(msg, dur=3500){
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(()=>t.classList.remove("show"), dur);
+}
+
+// ── Firebase status ──
+function setFbStatus(state){
+  const dot = document.getElementById("fb-dot");
+  const txt = document.getElementById("fb-text");
+  if(state==="connected"){dot.className="fb-dot connected";txt.textContent="Firebase conectado";}
+  else if(state==="syncing"){dot.className="fb-dot syncing";txt.textContent="Sincronizando...";}
+  else {dot.className="fb-dot";txt.textContent="Sem conexão Firebase";}
+}
+
+// Detecta quando Firebase conecta (listener chama buildAllFilters pela 1ª vez)
+setTimeout(()=>{
+  if(document.getElementById("fb-dot").className.includes("connected")) return;
+  // Se ainda não conectou, usa dados locais
+  setFbStatus("offline");
+  window.dashboardReady = true;
+  buildAllFilters(); buildVisao();
+  showToast("⚠️ Usando dados locais. Configure o Firebase para dados em tempo real.");
+}, 4000);
+
+// ── Helpers ──
+function groupBy(arr,key){const m={};arr.forEach(r=>{m[r[key]]=(m[r[key]]||0)+r.valor;});return m;}
+function groupByCount(arr,key){const m={};arr.forEach(r=>{m[r[key]]=(m[r[key]]||0)+1;});return m;}
+function uniq(arr,key){return[...new Set(arr.map(r=>r[key]))].sort();}
+function makeChart(id,cfg){
+  if(charts[id])charts[id].destroy();
+  const c=document.getElementById(id);if(!c)return;
+  charts[id]=new Chart(c,cfg);
+}
+
+// ── Role ──
+function setRole(role){
+  currentRole = role;
+  document.getElementById("btn-admin").classList.toggle("active", role==="admin");
+  document.getElementById("btn-viewer").classList.toggle("active", role==="viewer");
+  const lbl = document.getElementById("role-label");
+  lbl.textContent  = role==="admin" ? "● Administrador" : "● Visualização";
+  lbl.style.color  = role==="admin" ? "var(--orange)" : "#888";
+  document.getElementById("tab-importar").style.display = role==="admin" ? "" : "none";
+  document.getElementById("admin-panel").style.display  = role==="admin" ? "block" : "none";
+  document.getElementById("viewer-lock").style.display  = role==="viewer" ? "block" : "none";
+  if(role==="viewer"){
+    const cur = document.querySelector(".pane.active");
+    if(cur && cur.id==="pane-importar"){
+      document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+      document.querySelectorAll(".pane").forEach(p=>p.classList.remove("active"));
+      document.querySelector(".tab").classList.add("active");
+      document.getElementById("pane-visao").classList.add("active");
+    }
+  }
+}
+
+// ── Filters ──
+window.buildAllFilters = function(){
+  const meses = uniq(DATA,"mes_ano");
+  const svcs  = uniq(DATA,"servico");
+  const clis  = uniq(DATA,"cliente");
+  const pop=(id,items,fn)=>{
+    const el=document.getElementById(id);
+    while(el.options.length>1)el.remove(1);
+    items.forEach(v=>{el.append(new Option(fn(v),v));});
+  };
+  pop("f-mes",meses,m=>DATA.find(r=>r.mes_ano===m)?.mes_label||m);
+  pop("f-svc",svcs, s=>SVC_SHORT[s]||s.substring(0,28));
+  pop("f-cli",clis, c=>c.substring(0,40));
+  const sel=document.getElementById("sel-mes");
+  while(sel.options.length)sel.remove(0);
+  meses.forEach(m=>sel.append(new Option(DATA.find(r=>r.mes_ano===m)?.mes_label||m,m)));
+  sel.value=meses[meses.length-1];
+  updateHeaderSub();
+  window.dashboardReady=true;
+  setFbStatus("connected");
+};
+
+function filtered(){
+  const mes=document.getElementById("f-mes").value;
+  const svc=document.getElementById("f-svc").value;
+  const cli=document.getElementById("f-cli").value;
+  return DATA.filter(r=>(mes?r.mes_ano===mes:true)&&(svc?r.servico===svc:true)&&(cli?r.cliente===cli:true));
+}
+function applyFilters(){buildVisao();}
+function resetFilters(){["f-mes","f-svc","f-cli"].forEach(id=>document.getElementById(id).value="");buildVisao();}
+
+function updateHeaderSub(){
+  const meses=uniq(DATA,"mes_ano");
+  const m1=DATA.find(r=>r.mes_ano===meses[0])?.mes_label||meses[0];
+  const m2=DATA.find(r=>r.mes_ano===meses[meses.length-1])?.mes_label||meses[meses.length-1];
+  document.getElementById("header-sub").textContent=`${m1} – ${m2} · ${DATA.length} notas fiscais · ${new Set(DATA.map(r=>r.cliente)).size} clientes`;
+}
+
+// ── VISÃO GERAL ──
+window.buildVisao = function(){
+  const d=filtered();
+  const total=d.reduce((s,r)=>s+r.valor,0);
+  const byMes=groupBy(d,"mes_ano");
+  const meses=Object.keys(byMes).sort();
+
+  // KPI "Mês selecionado vs anterior":
+  // Usa DATA completo para encontrar todos os meses e calcular variação corretamente.
+  // Se filtro de mês estiver ativo → compara esse mês vs o anterior a ele no DATA global.
+  // Se sem filtro → compara último mês vs penúltimo.
+  const byMesAll=groupBy(DATA,"mes_ano");
+  const mesesAll=Object.keys(byMesAll).sort();
+  const filtroMes=document.getElementById("f-mes").value;
+  const refMes=filtroMes||mesesAll[mesesAll.length-1];
+  const idxRef=mesesAll.indexOf(refMes);
+  const prevMes=idxRef>0?mesesAll[idxRef-1]:null;
+  const vA=byMesAll[refMes]||0;
+  const vP=prevMes?(byMesAll[prevMes]||0):0;
+  const dp=pct(vA,vP);
+  const refLabel=DATA.find(r=>r.mes_ano===refMes)?.mes_label||refMes;
+  const prevLabel=prevMes?(DATA.find(r=>r.mes_ano===prevMes)?.mes_label||prevMes):"";
+  const kpiTitle=filtroMes?`Mês selecionado`:`Último mês`;
+  const dpLabel=vP>0
+    ? `${dp>=0?"▲":"▼"} ${Math.abs(dp).toFixed(1)}% vs ${prevLabel}`
+    : "Sem mês anterior";
+
+  document.getElementById("kpi-row").innerHTML=`
+    <div class="kpi"><div class="kpi-label">Faturamento total</div><div class="kpi-val">${fmt(total)}</div><div class="kpi-sub neutral">${meses.length} ${meses.length===1?"mês":"meses"}</div></div>
+    <div class="kpi"><div class="kpi-label">Notas fiscais</div><div class="kpi-val">${d.length}</div><div class="kpi-sub neutral">emitidas</div></div>
+    <div class="kpi"><div class="kpi-label">Clientes ativos</div><div class="kpi-val">${new Set(d.map(r=>r.cliente)).size}</div><div class="kpi-sub neutral">distintos</div></div>
+    <div class="kpi"><div class="kpi-label">${kpiTitle} (${refLabel})</div><div class="kpi-val">${fmt(vA)}</div><div class="kpi-sub ${dp>=0?"up":"down"}">${dpLabel}</div></div>`;
+  const labels=meses.map(m=>DATA.find(r=>r.mes_ano===m)?.mes_label||m);
+  const vals=meses.map(m=>Math.round(byMes[m]));
+  makeChart("ch-mensal",{type:"bar",data:{labels,datasets:[{label:"Faturamento",data:vals,backgroundColor:"#E8610A",borderRadius:5,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>"R$ "+c.parsed.y.toLocaleString("pt-BR")}}},scales:{y:{ticks:{callback:v=>"R$"+Math.round(v/1000)+"k",color:"#9a9a94"},grid:{color:"#e2e2dc"}},x:{ticks:{color:"#9a9a94"},grid:{display:false}}}}});
+  const svcs=groupBy(d,"servico");
+  const svcKeys=Object.keys(svcs).sort((a,b)=>svcs[b]-svcs[a]);
+  const totS=Object.values(svcs).reduce((s,v)=>s+v,0);
+  document.getElementById("leg-svc").innerHTML=svcKeys.slice(0,6).map((k,i)=>`<span class="leg-item"><span class="leg-box" style="background:${CATS[i%CATS.length]}"></span>${SVC_SHORT[k]||k.substring(0,14)} ${(svcs[k]/totS*100).toFixed(0)}%</span>`).join("");
+  makeChart("ch-svc",{type:"doughnut",data:{labels:svcKeys.map(k=>SVC_SHORT[k]||k.substring(0,20)),datasets:[{data:svcKeys.map(k=>Math.round(svcs[k])),backgroundColor:CATS.slice(0,svcKeys.length),borderWidth:2,borderColor:"#fff"}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>"R$ "+c.parsed.toLocaleString("pt-BR")}}}}});
+  const cliM=groupBy(d,"cliente");
+  const cliK=Object.keys(cliM).sort((a,b)=>cliM[b]-cliM[a]).slice(0,10);
+  const maxC=cliM[cliK[0]]||1;
+  document.getElementById("cli-top").innerHTML=cliK.map((k,i)=>`<div class="rank-row"><span class="rank-trophy">${TROPHY[i]||""}</span><span class="rank-num">${i+1}</span><span class="rank-name">${k.replace(/\s*\(\d+\)/,"").substring(0,40)}</span><div class="rank-bar-wrap"><div class="rank-bar" style="width:${(cliM[k]/maxC*100).toFixed(0)}%"></div></div><span class="rank-val">${fmt(cliM[k])}</span></div>`).join("");
+};
+
+// ── MÊS A MÊS ──
+function buildMensal(){
+  const byMes=groupBy(DATA,"mes_ano");
+  const cnt=groupByCount(DATA,"mes_ano");
+  const meses=Object.keys(byMes).sort();
+  const labels=meses.map(m=>DATA.find(r=>r.mes_ano===m)?.mes_label||m);
+  makeChart("ch-mensal2",{type:"bar",data:{labels,datasets:[{label:"Faturamento",data:meses.map(m=>Math.round(byMes[m])),backgroundColor:"#E8610A",borderRadius:4,yAxisID:"y",borderSkipped:false},{label:"Notas",data:meses.map(m=>cnt[m]||0),type:"line",borderColor:"#2a78d6",borderWidth:2.5,pointBackgroundColor:"#2a78d6",pointRadius:5,yAxisID:"y1"}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:"index"}},scales:{y:{ticks:{callback:v=>"R$"+Math.round(v/1000)+"k",color:"#9a9a94"},grid:{color:"#e2e2dc"}},y1:{position:"right",ticks:{color:"#2a78d6"},grid:{display:false}},x:{ticks:{color:"#9a9a94"},grid:{display:false}}}}});
+  let rows="<thead><tr><th>Mês</th><th>Faturamento</th><th>Notas</th><th>Clientes</th><th>Ticket médio</th><th>Variação</th></tr></thead><tbody>";
+  meses.forEach((m,i)=>{
+    const v=byMes[m],n=cnt[m]||1,c=new Set(DATA.filter(r=>r.mes_ano===m).map(r=>r.cliente)).size;
+    const dp=i>0?pct(v,byMes[meses[i-1]]):null;
+    rows+=`<tr><td><strong>${DATA.find(r=>r.mes_ano===m)?.mes_label||m}</strong></td><td>${fmt(v)}</td><td>${cnt[m]||0}</td><td>${c}</td><td>${fmt(v/n)}</td><td>${dp===null?"—":`<span class="${dp>=0?"up":"down"}">${dp>=0?"▲":"▼"}${Math.abs(dp).toFixed(1)}%</span>`}</td></tr>`;
+  });
+  document.getElementById("tbl-mensal").innerHTML=rows+"</tbody>";
+}
+
+// ── RANKING ──
+function buildRanking(){
+  const svcs=groupBy(DATA,"servico");
+  const svcK=Object.keys(svcs).sort((a,b)=>svcs[b]-svcs[a]);
+  const maxS=svcs[svcK[0]]||1;
+  document.getElementById("svc-rank").innerHTML=svcK.map((k,i)=>`<div class="rank-row"><span class="rank-trophy">${TROPHY[i]||""}</span><span class="rank-num">${i+1}</span><span class="rank-name">${SVC_SHORT[k]||k.substring(0,26)}</span><div class="rank-bar-wrap"><div class="rank-bar" style="width:${(svcs[k]/maxS*100).toFixed(0)}%;background:${CATS[i%CATS.length]}"></div></div><span class="rank-val">${fmt(svcs[k])}</span></div>`).join("");
+  const cliM=groupBy(DATA,"cliente");
+  const cliK=Object.keys(cliM).sort((a,b)=>cliM[b]-cliM[a]).slice(0,12);
+  const maxC=cliM[cliK[0]]||1;
+  document.getElementById("cli-rank").innerHTML=cliK.map((k,i)=>`<div class="rank-row"><span class="rank-trophy">${TROPHY[i]||""}</span><span class="rank-num">${i+1}</span><span class="rank-name">${k.replace(/\s*\(\d+\)/,"").substring(0,28)}</span><div class="rank-bar-wrap"><div class="rank-bar" style="width:${(cliM[k]/maxC*100).toFixed(0)}%;background:${CATS[i%CATS.length]}"></div></div><span class="rank-val">${fmt(cliM[k])}</span></div>`).join("");
+  const meses=uniq(DATA,"mes_ano");
+  const datasets=svcK.map((s,i)=>({label:SVC_SHORT[s]||s.substring(0,14),data:meses.map(m=>Math.round(DATA.filter(r=>r.mes_ano===m&&r.servico===s).reduce((a,r)=>a+r.valor,0))),backgroundColor:CATS[i%CATS.length],stack:"a"}));
+  document.getElementById("leg-mix").innerHTML=svcK.slice(0,6).map((k,i)=>`<span class="leg-item"><span class="leg-box" style="background:${CATS[i%CATS.length]}"></span>${SVC_SHORT[k]||k.substring(0,14)}</span>`).join("");
+  makeChart("ch-mix",{type:"bar",data:{labels:meses.map(m=>DATA.find(r=>r.mes_ano===m)?.mes_label||m),datasets},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{mode:"index"}},scales:{x:{stacked:true,ticks:{color:"#9a9a94"},grid:{display:false}},y:{stacked:true,ticks:{callback:v=>"R$"+Math.round(v/1000)+"k",color:"#9a9a94"},grid:{color:"#e2e2dc"}}}}});
+}
+
+// ── ANÁLISE MENSAL ──
+function renderAnalise(){
+  const sel=document.getElementById("sel-mes").value;
+  const meses=uniq(DATA,"mes_ano").sort();
+  const idx=meses.indexOf(sel);
+  const prev=idx>0?meses[idx-1]:null;
+  const dA=DATA.filter(r=>r.mes_ano===sel);
+  const dP=prev?DATA.filter(r=>r.mes_ano===prev):[];
+  const vA=dA.reduce((s,r)=>s+r.valor,0);
+  const vP=dP.reduce((s,r)=>s+r.valor,0);
+  const dp=pct(vA,vP);
+  const nA=dA.length,nP=dP.length;
+  const cA=new Set(dA.map(r=>r.cliente)).size,cP=new Set(dP.map(r=>r.cliente)).size;
+  const lA=DATA.find(r=>r.mes_ano===sel)?.mes_label||sel;
+  const lP=prev?DATA.find(r=>r.mes_ano===prev)?.mes_label||prev:"—";
+  document.getElementById("vs-kpis").innerHTML=`
+    <div class="vs-card"><div class="vs-month">${lA}</div><div class="vs-val">${fmt(vA)}</div><div class="vs-delta ${dp>=0?"up":"down"}">${isNaN(dp)||dp===0?"—":(dp>0?"▲":"▼")+Math.abs(dp).toFixed(1)+"% vs "+lP}</div></div>
+    <div class="vs-card"><div class="vs-month">${lP}</div><div class="vs-val">${vP?fmt(vP):"—"}</div><div class="vs-delta neutral">${nP} notas · ${cP} clientes</div></div>
+    <div class="vs-card"><div class="vs-month">Notas emitidas</div><div class="vs-val">${nA}</div><div class="vs-delta ${nA>=nP?"up":"down"}">${nP?(nA-nP>=0?"▲":"▼")+Math.abs(nA-nP)+" vs "+lP:"—"}</div></div>
+    <div class="vs-card"><div class="vs-month">Clientes ativos</div><div class="vs-val">${cA}</div><div class="vs-delta ${cA>=cP?"up":"down"}">${cP?(cA-cP>=0?"▲":"▼")+Math.abs(cA-cP)+" vs "+lP:"—"}</div></div>`;
+  const sA=groupBy(dA,"servico"),sP=groupBy(dP,"servico");
+  const svcK=Object.keys(sA).sort((a,b)=>sA[b]-sA[a]).slice(0,6);
+  document.getElementById("leg-vs").innerHTML=`<span class="leg-item"><span class="leg-box" style="background:#E8610A"></span>${lA}</span><span class="leg-item"><span class="leg-box" style="background:#2a78d6"></span>${lP}</span>`;
+  makeChart("ch-vs",{type:"bar",data:{labels:svcK.map(k=>SVC_SHORT[k]||k.substring(0,14)),datasets:[{label:lA,data:svcK.map(k=>Math.round(sA[k]||0)),backgroundColor:"#E8610A",borderRadius:3,borderSkipped:false},{label:lP,data:svcK.map(k=>Math.round(sP[k]||0)),backgroundColor:"#2a78d6",borderRadius:3,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>"R$ "+c.parsed.y.toLocaleString("pt-BR")}}},scales:{x:{ticks:{color:"#9a9a94"},grid:{display:false}},y:{ticks:{callback:v=>"R$"+Math.round(v/1000)+"k",color:"#9a9a94"},grid:{color:"#e2e2dc"}}}}});
+  const cliA=groupBy(dA,"cliente");
+  const cliK=Object.keys(cliA).sort((a,b)=>cliA[b]-cliA[a]).slice(0,8);
+  const maxCA=cliA[cliK[0]]||1;
+  document.getElementById("vs-cli").innerHTML=cliK.map((k,i)=>`<div class="rank-row"><span class="rank-trophy">${TROPHY[i]||""}</span><span class="rank-num">${i+1}</span><span class="rank-name">${k.replace(/\s*\(\d+\)/,"").substring(0,28)}</span><div class="rank-bar-wrap"><div class="rank-bar" style="width:${(cliA[k]/maxCA*100).toFixed(0)}%"></div></div><span class="rank-val">${fmt(cliA[k])}</span></div>`).join("");
+  let rows="<thead><tr><th>Data</th><th>Serviço</th><th>Cliente</th><th>Nota</th><th>Valor</th></tr></thead><tbody>";
+  dA.sort((a,b)=>a.data.localeCompare(b.data)).forEach(r=>{
+    const nr=String(r.nr_nota||"").replace(/\.0$/,"");
+    rows+=`<tr><td>${r.data.split("-").reverse().join("/")}</td><td>${SVC_SHORT[r.servico]||r.servico.substring(0,20)}</td><td>${r.cliente.replace(/\s*\(\d+\)/,"").substring(0,30)}</td><td>${nr}</td><td>${fmt(r.valor)}</td></tr>`;
+  });
+  document.getElementById("tbl-mes").innerHTML=rows+"</tbody>";
+}
+
+// ── UPLOAD / IMPORT ──
+function handleDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f)handleFile(f);}
+
+function handleFile(file){
+  if(!file)return;
+  const ext=file.name.split(".").pop().toLowerCase();
+  if(!["xls","xlsx","csv"].includes(ext)){showErr("Formato inválido. Use .xls, .xlsx ou .csv");return;}
+  showProg(true,"Lendo arquivo...",10);
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      let parsed=[];
+      if(ext==="csv"){
+        const lines=(e.target.result).split("\n").filter(l=>l.trim());
+        const hdrs=lines[0].split(",").map(h=>h.trim().replace(/"/g,""));
+        parsed=lines.slice(1).map(line=>{const v=line.split(",").map(x=>x.trim().replace(/"/g,""));const o={};hdrs.forEach((h,i)=>o[h]=v[i]||"");return o;});
+      } else {
+        const wb=XLSX.read(e.target.result,{type:"array"});
+        parsed=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:""});
+      }
+      showProg(true,"Validando colunas...",50);
+      const required=["Dt. emissão","Produto master","Nr. nota","Pessoa","Vl. total vendido"];
+      const keys=parsed.length?Object.keys(parsed[0]):[];
+      const miss=required.filter(r=>!keys.some(k=>k.trim()===r));
+      if(miss.length){showErr("Colunas ausentes: "+miss.join(", "));showProg(false);return;}
+      showProg(true,"Convertendo...",75);
+      pendingData=parsed.map((row,idx)=>{
+        const raw=row["Dt. emissão"]||"";
+        let dt=null;
+        if(typeof raw==="number"){dt=new Date(Math.round((raw-25569)*86400*1000));}
+        else{const p=String(raw).split("/");if(p.length===3)dt=new Date(+p[2],+p[1]-1,+p[0]);}
+        if(!dt||isNaN(dt))return null;
+        const svcRaw=(row["Produto master"]||"").trim();
+        const servico=svcRaw.toUpperCase().includes("ARMAZENAMENTO")?"ARMAZENAMENTO, DEPÓSITO, CARGA, DESCARGA":svcRaw;
+        const m=(dt.getMonth()+1).toString().padStart(2,"0");
+        const nr=String(row["Nr. nota"]||"").replace(/\.0$/,"");
+        return{data:dt.toISOString().substring(0,10),mes_ano:`${dt.getFullYear()}-${m}`,mes_label:["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][dt.getMonth()]+"/"+dt.getFullYear(),mes_num:dt.getMonth()+1,ano:dt.getFullYear(),servico,cliente:(row["Pessoa"]||"").trim(),nr_nota:nr,qtd:parseInt(row["Qt. item"])||1,valor:parseFloat(String(row["Vl. total vendido"]).replace(",","."))||0};
+      }).filter(Boolean);
+      showProg(true,"Pronto!",100);
+      setTimeout(()=>showProg(false),400);
+      showPreview(pendingData,file.name);
+    }catch(err){showErr("Erro: "+err.message);showProg(false);}
+  };
+  if(ext==="csv")reader.readAsText(file,"UTF-8");
+  else reader.readAsArrayBuffer(file);
+}
+
+function showProg(show,msg="",pct=0){
+  document.getElementById("prog-wrap").style.display=show?"block":"none";
+  if(show){document.getElementById("prog-text").textContent=msg;document.getElementById("prog-bar").style.width=pct+"%";}
+}
+function progressTo(p,msg){document.getElementById("prog-bar").style.width=p+"%";document.getElementById("prog-text").textContent=msg;document.getElementById("prog-wrap").style.display="block";}
+function showErr(msg){const e=document.getElementById("msg-err");e.textContent="❌ "+msg;e.style.display="block";setTimeout(()=>e.style.display="none",6000);}
+function showOkMsg(msg){const e=document.getElementById("msg-ok");e.textContent=msg;e.style.display="block";setTimeout(()=>e.style.display="none",6000);}
+
+function showPreview(data,fname){
+  document.getElementById("preview-wrap").style.display="block";
+  const sample=data.slice(0,8);
+  let r="<thead><tr><th>Data</th><th>Serviço</th><th>Cliente</th><th>Nota</th><th>Valor</th></tr></thead><tbody>";
+  sample.forEach(x=>{r+=`<tr><td>${x.data.split("-").reverse().join("/")}</td><td>${SVC_SHORT[x.servico]||x.servico.substring(0,20)}</td><td>${x.cliente.substring(0,28)}</td><td>${x.nr_nota}</td><td>${fmt(x.valor)}</td></tr>`;});
+  r+=`</tbody><tfoot><tr><td colspan="5" style="color:var(--text3);padding:8px 10px;font-size:11px;">Mostrando 8 de ${data.length} registros de "${fname}"</td></tr></tfoot>`;
+  document.getElementById("tbl-preview").innerHTML=r;
+}
+
+async function confirmImport(){
+  if(!pendingData||!pendingData.length){showErr("Nenhum dado para importar.");return;}
+  if(window.saveToFirestore){
+    try{
+      setFbStatus("syncing");
+      showProg(true,"Salvando no Firebase...",0);
+      const saved=await window.saveToFirestore(pendingData);
+      setFbStatus("connected");
+      showProg(false);
+      importHistory.unshift({dt:new Date().toLocaleString("pt-BR"),qtd:saved,status:"✅ Salvo no Firebase"});
+      showOkMsg(`✅ ${saved} registros salvos no Firebase! Todos os usuários serão atualizados automaticamente.`);
+      showToast("🔥 Firebase atualizado! Todos os usuários recebem os novos dados.");
+    }catch(err){
+      setFbStatus("offline");
+      showProg(false);
+      // Fallback: atualiza apenas local
+      DATA=[...pendingData];
+      importHistory.unshift({dt:new Date().toLocaleString("pt-BR"),qtd:DATA.length,status:"⚠️ Local (Firebase offline)"});
+      showErr("Firebase não conectado. Dados atualizados apenas localmente: "+err.message);
+    }
+  } else {
+    DATA=[...pendingData];
+    importHistory.unshift({dt:new Date().toLocaleString("pt-BR"),qtd:DATA.length,status:"⚠️ Local (sem Firebase)"});
+    showOkMsg("✅ "+DATA.length+" registros importados localmente.");
+  }
+  pendingData=null;
+  document.getElementById("preview-wrap").style.display="none";
+  document.getElementById("file-inp").value="";
+  buildAllFilters();buildVisao();buildMensal();buildRanking();renderAnalise();
+  renderHistory();
+}
+function cancelImport(){pendingData=null;document.getElementById("preview-wrap").style.display="none";document.getElementById("file-inp").value="";}
+
+function renderHistory(){
+  if(!importHistory.length){document.getElementById("tbl-hist").innerHTML="<thead><tr><th colspan=3 style=\"color:#aaa;padding:12px\">Nenhuma importação nesta sessão.</th></tr></thead>";return;}
+  let r="<thead><tr><th>Data/hora</th><th>Registros</th><th>Status</th></tr></thead><tbody>";
+  importHistory.forEach(h=>{r+=`<tr><td>${h.dt}</td><td>${h.qtd}</td><td>${h.status}</td></tr>`;});
+  document.getElementById("tbl-hist").innerHTML=r+"</tbody>";
+}
+
+// ── TABS ──
+function switchTab(name,el){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+  document.querySelectorAll(".pane").forEach(p=>p.classList.remove("active"));
+  el.classList.add("active");
+  document.getElementById("pane-"+name).classList.add("active");
+  if(name==="mensal")buildMensal();
+  if(name==="ranking")buildRanking();
+  if(name==="analise")renderAnalise();
+  if(name==="importar")renderHistory();
+}
+
+// ── INIT ──
+buildAllFilters();
+buildVisao();
+renderHistory();
+</script>
+</body>
+</html>
